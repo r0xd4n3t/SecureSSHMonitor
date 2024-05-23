@@ -11,6 +11,7 @@ import atexit
 import requests
 import subprocess
 import signal
+from threading import Timer
 
 class SSHLoginMonitor:
     def __init__(self, log_path, bot_token, chat_id, message_thread_id, ssh_log_path, lockfile):
@@ -30,6 +31,9 @@ class SSHLoginMonitor:
         # Register signal handlers for clean termination
         signal.signal(signal.SIGTERM, self.handle_signal)
         signal.signal(signal.SIGINT, self.handle_signal)
+
+        # Start the periodic check for unbanning IPs
+        self.start_unban_check()
 
     def setup_logging(self):
         logging.basicConfig(
@@ -98,7 +102,7 @@ class SSHLoginMonitor:
             subprocess.run(ban_command, shell=True, check=True)
             self.banned_ips[ip] = unban_time
             logging.info(f"IP {ip} banned for {ban_duration} seconds.")
-            self.send_telegram_message(f"🚫 IP {ip} banned for {ban_duration // 60} minutes.")
+            self.send_telegram_message(f"🚫 IP {ip} banned for around {ban_duration // 60} minutes.")
         except subprocess.CalledProcessError as e:
             logging.error(f"Failed to ban IP {ip}: {str(e)}")
             self.send_telegram_message(f"⚠️ Failed to ban IP {ip}: {str(e)}")
@@ -119,6 +123,11 @@ class SSHLoginMonitor:
         for ip, unban_time in list(self.banned_ips.items()):
             if current_time >= unban_time:
                 self.unban_ip(ip)
+
+    def start_unban_check(self):
+        # Schedule the check_unban_ips method to run every minute
+        self.check_unban_ips()
+        Timer(60, self.start_unban_check).start()
 
     def parse_ssh_log(self, line):
         timestamp = datetime.now().strftime("%d/%m/%Y %I:%M:%S%p")
@@ -148,7 +157,6 @@ class SSHLoginMonitor:
             with open(self.SSH_LOG_PATH, 'r') as log_file:
                 for line in self.tail_file(log_file):
                     self.parse_ssh_log(line)
-                    self.check_unban_ips()
         except FileNotFoundError as e:
             logging.error(f"SSH log file not found: {str(e)}")
         except PermissionError as e:
