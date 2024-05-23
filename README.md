@@ -33,6 +33,10 @@ This helps in identifying unauthorized access attempts and potential brute force
 
 ![](https://raw.githubusercontent.com/r0xd4n3t/SecureSSHMonitor/main/img/2.png)
 
+> Sample alert: Ban and unban
+
+![](https://raw.githubusercontent.com/r0xd4n3t/SecureSSHMonitor/main/img/3.png)
+
 ## 📝 Prerequisites
 Before running this script, ensure that you have the following:
 
