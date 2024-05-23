@@ -2,12 +2,15 @@ import os
 import re
 import time
 import logging
-from datetime import datetime
+import random
+from datetime import datetime, timedelta
 from pathlib import Path
 import socket
 import fcntl
 import atexit
 import requests
+import subprocess
+import signal
 
 class SSHLoginMonitor:
     def __init__(self, log_path, bot_token, chat_id, message_thread_id, ssh_log_path, lockfile):
@@ -20,8 +23,13 @@ class SSHLoginMonitor:
         self.last_alert_time = None
         self.hostname = socket.gethostname()
         self.failed_login_attempts = {}
+        self.banned_ips = {}
         self.setup_logging()
         self.create_lock_file()
+        
+        # Register signal handlers for clean termination
+        signal.signal(signal.SIGTERM, self.handle_signal)
+        signal.signal(signal.SIGINT, self.handle_signal)
 
     def setup_logging(self):
         logging.basicConfig(
@@ -57,6 +65,11 @@ class SSHLoginMonitor:
         except Exception as e:
             logging.error(f"Failed to clean up lock file: {str(e)}")
 
+    def handle_signal(self, signum, frame):
+        logging.info(f"Received termination signal {signum}")
+        self.cleanup_lock_file()
+        exit(0)
+
     def tail_file(self, file, delay=1):
         file.seek(0, 2)
         while True:
@@ -75,6 +88,37 @@ class SSHLoginMonitor:
             logging.info(f"Message sent to Telegram: {message}")
         except requests.exceptions.RequestException as e:
             logging.error(f"Failed to send message to Telegram: {str(e)}")
+        time.sleep(2)  # Sleep for 2 seconds to avoid rate limit
+
+    def ban_ip(self, ip):
+        ban_duration = random.randint(300, 900)  # 5 to 15 minutes in seconds
+        ban_command = f"iptables -A INPUT -s {ip} -j DROP"
+        unban_time = datetime.now() + timedelta(seconds=ban_duration)
+        try:
+            subprocess.run(ban_command, shell=True, check=True)
+            self.banned_ips[ip] = unban_time
+            logging.info(f"IP {ip} banned for {ban_duration} seconds.")
+            self.send_telegram_message(f"🚫 IP {ip} banned for {ban_duration // 60} minutes.")
+        except subprocess.CalledProcessError as e:
+            logging.error(f"Failed to ban IP {ip}: {str(e)}")
+            self.send_telegram_message(f"⚠️ Failed to ban IP {ip}: {str(e)}")
+
+    def unban_ip(self, ip):
+        unban_command = f"iptables -D INPUT -s {ip} -j DROP"
+        try:
+            subprocess.run(unban_command, shell=True, check=True)
+            del self.banned_ips[ip]
+            logging.info(f"IP {ip} unbanned.")
+            self.send_telegram_message(f"✅ IP {ip} unbanned.")
+        except subprocess.CalledProcessError as e:
+            logging.error(f"Failed to unban IP {ip}: {str(e)}")
+            self.send_telegram_message(f"⚠️ Failed to unban IP {ip}: {str(e)}")
+
+    def check_unban_ips(self):
+        current_time = datetime.now()
+        for ip, unban_time in list(self.banned_ips.items()):
+            if current_time >= unban_time:
+                self.unban_ip(ip)
 
     def parse_ssh_log(self, line):
         timestamp = datetime.now().strftime("%d/%m/%Y %I:%M:%S%p")
@@ -96,6 +140,7 @@ class SSHLoginMonitor:
             if self.failed_login_attempts[login_ip] >= 3:
                 alert_message = f"🚨 Potential brute force attack detected from {login_ip} on server [{self.hostname}]"
                 self.send_telegram_message(alert_message)
+                self.ban_ip(login_ip)
                 self.failed_login_attempts[login_ip] = 0
 
     def monitor_ssh_log(self):
@@ -103,6 +148,7 @@ class SSHLoginMonitor:
             with open(self.SSH_LOG_PATH, 'r') as log_file:
                 for line in self.tail_file(log_file):
                     self.parse_ssh_log(line)
+                    self.check_unban_ips()
         except FileNotFoundError as e:
             logging.error(f"SSH log file not found: {str(e)}")
         except PermissionError as e:
