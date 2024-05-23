@@ -25,9 +25,11 @@ class SSHLoginMonitor:
         self.hostname = socket.gethostname()
         self.failed_login_attempts = {}
         self.banned_ips = {}
+        self.unban_timer = None
+        self.lockfile_handle = None  # Initialize lockfile_handle to None
         self.setup_logging()
         self.create_lock_file()
-        
+
         # Register signal handlers for clean termination
         signal.signal(signal.SIGTERM, self.handle_signal)
         signal.signal(signal.SIGINT, self.handle_signal)
@@ -61,16 +63,21 @@ class SSHLoginMonitor:
         atexit.register(self.cleanup_lock_file)
 
     def cleanup_lock_file(self):
-        try:
-            fcntl.flock(self.lockfile_handle, fcntl.LOCK_UN)
-            self.lockfile_handle.close()
-            os.remove(self.lockfile)
-            logging.info("Lock file cleaned up successfully.")
-        except Exception as e:
-            logging.error(f"Failed to clean up lock file: {str(e)}")
+        if self.lockfile_handle:
+            try:
+                fcntl.flock(self.lockfile_handle, fcntl.LOCK_UN)
+                self.lockfile_handle.close()
+                os.remove(self.lockfile)
+                logging.info("Lock file cleaned up successfully.")
+            except Exception as e:
+                logging.error(f"Failed to clean up lock file: {str(e)}")
+            finally:
+                self.lockfile_handle = None  # Ensure the handle is set to None after cleanup
 
     def handle_signal(self, signum, frame):
         logging.info(f"Received termination signal {signum}")
+        if self.unban_timer:
+            self.unban_timer.cancel()
         self.cleanup_lock_file()
         exit(0)
 
@@ -96,47 +103,54 @@ class SSHLoginMonitor:
 
     def ban_ip(self, ip):
         ban_duration = random.randint(300, 900)  # 5 to 15 minutes in seconds
-        ban_command = f"iptables -A INPUT -s {ip} -j DROP"
+        is_ipv6 = ':' in ip
+        ban_command = f"ip6tables -A INPUT -s {ip} -j DROP" if is_ipv6 else f"iptables -A INPUT -s {ip} -j DROP"
         unban_time = datetime.now() + timedelta(seconds=ban_duration)
         try:
             subprocess.run(ban_command, shell=True, check=True)
-            self.banned_ips[ip] = unban_time
+            self.banned_ips[ip] = (unban_time, ban_duration)  # Store tuple (unban_time, ban_duration)
             logging.info(f"IP {ip} banned for {ban_duration} seconds.")
-            self.send_telegram_message(f"🚫 IP {ip} banned for around {ban_duration // 60} minutes.")
+            self.send_telegram_message(f"Server: [{self.hostname}] 🚫 IP [{ip}] banned for around [{ban_duration // 60}] minutes.")
         except subprocess.CalledProcessError as e:
             logging.error(f"Failed to ban IP {ip}: {str(e)}")
-            self.send_telegram_message(f"⚠️ Failed to ban IP {ip}: {str(e)}")
+            self.send_telegram_message(f"Server: [{self.hostname}] ⚠️ Failed to ban IP [{ip}]: {str(e)}")
 
     def unban_ip(self, ip):
-        unban_command = f"iptables -D INPUT -s {ip} -j DROP"
+        is_ipv6 = ':' in ip
+        unban_command = f"ip6tables -D INPUT -s {ip} -j DROP" if is_ipv6 else f"iptables -D INPUT -s {ip} -j DROP"
         try:
             subprocess.run(unban_command, shell=True, check=True)
-            del self.banned_ips[ip]
-            logging.info(f"IP {ip} unbanned.")
-            self.send_telegram_message(f"✅ IP {ip} unbanned.")
+            unban_time, ban_duration = self.banned_ips.pop(ip)
+            elapsed_time = (datetime.now() - (unban_time - timedelta(seconds=ban_duration))).total_seconds()
+            logging.info(f"IP {ip} unbanned after {elapsed_time} seconds.")
+            self.send_telegram_message(f"Server: [{self.hostname}] ✅ IP [{ip}] unbanned. Ban Duration: [{int(elapsed_time)}] seconds.")
         except subprocess.CalledProcessError as e:
             logging.error(f"Failed to unban IP {ip}: {str(e)}")
-            self.send_telegram_message(f"⚠️ Failed to unban IP {ip}: {str(e)}")
+            self.send_telegram_message(f"Server: [{self.hostname}] ⚠️ Failed to unban IP [{ip}]: {str(e)}")
 
     def check_unban_ips(self):
         current_time = datetime.now()
-        for ip, unban_time in list(self.banned_ips.items()):
+        for ip, (unban_time, _) in list(self.banned_ips.items()):
             if current_time >= unban_time:
                 self.unban_ip(ip)
 
     def start_unban_check(self):
-        # Schedule the check_unban_ips method to run every minute
         self.check_unban_ips()
-        Timer(60, self.start_unban_check).start()
+        self.unban_timer = Timer(60, self.start_unban_check)
+        self.unban_timer.start()
 
     def parse_ssh_log(self, line):
         timestamp = datetime.now().strftime("%d/%m/%Y %I:%M:%S%p")
-        match_successful = re.search(r'Accepted password for (.+?) from (\S+)', line)
-        match_failed = re.search(r'Failed password for (.+?) from (\S+)', line)
+
+        # Adjust regex to capture IPv6 addresses and hostnames
+        ip_regex = r'(\b(?:\d{1,3}\.){3}\d{1,3}\b|\b(?:[0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}\b|\b[a-zA-Z0-9\.\-]+\b)'
+
+        match_successful = re.search(rf'Accepted password for (.+?) from {ip_regex}', line)
+        match_failed = re.search(rf'Failed password for (.+?) from {ip_regex}', line)
 
         if match_successful:
             login_user, login_ip = match_successful.group(1), match_successful.group(2)
-            alert_message = f"⚠️ Login Alert ⚠️ Server [{self.hostname}] User [{login_user}] login from {login_ip} on {timestamp}"
+            alert_message = f"Server: [{self.hostname}] ⚠️ Login Alert User [{login_user}] login from [{login_ip}] on [{timestamp}]"
 
             if self.last_alert_time != timestamp:
                 self.send_telegram_message(alert_message)
@@ -147,7 +161,7 @@ class SSHLoginMonitor:
             self.failed_login_attempts[login_ip] = self.failed_login_attempts.get(login_ip, 0) + 1
 
             if self.failed_login_attempts[login_ip] >= 3:
-                alert_message = f"🚨 Potential brute force attack detected from {login_ip} on server [{self.hostname}]"
+                alert_message = f"Server: [{self.hostname}] 🚨 Potential brute force attack detected from [{login_ip}]"
                 self.send_telegram_message(alert_message)
                 self.ban_ip(login_ip)
                 self.failed_login_attempts[login_ip] = 0
