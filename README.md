@@ -121,8 +121,8 @@ chown root:root /root/ssh-login-monitor/.ssh_login_monitor.log
 5. Reload systemd, enable and start the service:
 ```
 systemctl daemon-reload
-systemctl enable ssh-login-monitor
-systemctl start ssh-login-monitor
+systemctl enable ssh_login_monitor
+systemctl start ssh_login_monitor
 ```
 
 ## 🕹️ Log Rotation
