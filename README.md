@@ -18,81 +18,130 @@ SSH Login Monitor
 <img src="https://img.shields.io/github/forks/r0xd4n3t/SecureSSHMonitor?color=brightgreen">
 </p>
 
-"A Python-based SSH login monitoring tool that detects and alerts on successful and failed/bruteforce login attempts via Telegram."
+A Python-based SSH login monitoring tool that detects and alerts on successful and failed/bruteforce login attempts via Telegram. Includes persistent IP banning with unban logic and multi-server support.
 
-# 📜 Introduction
-This repository contains a Python script for monitoring SSH login attempts on a Linux server. 
-The script detects both successful and failed login attempts and sends alerts via Telegram to a specified chat group. 
-This helps in identifying unauthorized access attempts and potential brute force attacks in real-time.
+---
 
-> Sample alert: Potential brute force attack detection
+## 📜 Introduction
 
-![](https://raw.githubusercontent.com/r0xd4n3t/SecureSSHMonitor/main/img/1.png)
+SSH Login Monitor provides real-time protection for your Linux server by watching SSH login events:
 
-> Sample alert: SSH Login Alert
+- 🚨 Detects failed logins and brute force attempts  
+- ✅ Alerts on successful logins  
+- 🔐 Bans IPs using `iptables` (IPv4/IPv6 supported)  
+- 🔁 Automatically unbans when the time expires  
+- 💾 Stores ban history in SQLite (`bans.db`)  
+- 🔔 Sends real-time Telegram alerts with hostname  
+- ⚙️ Runs continuously as a systemd service  
+- 💥 Supports log persistence via `iptables-persistent`
 
-![](https://raw.githubusercontent.com/r0xd4n3t/SecureSSHMonitor/main/img/2.png)
+> Sample alert: Brute force detection  
+> ![](https://raw.githubusercontent.com/r0xd4n3t/SecureSSHMonitor/main/img/1.png)
 
-> Sample alert: Ban and unban
+> Sample alert: SSH Login Notification  
+> ![](https://raw.githubusercontent.com/r0xd4n3t/SecureSSHMonitor/main/img/2.png)
 
-![](https://raw.githubusercontent.com/r0xd4n3t/SecureSSHMonitor/main/img/3.png)
+> Sample alert: IP Banned / Unbanned  
+> ![](https://raw.githubusercontent.com/r0xd4n3t/SecureSSHMonitor/main/img/3.png)
+
+---
+
+## 🧰 Features
+
+- Real-time SSH log monitoring using `watchdog`
+- IP address validation (IPv4 + IPv6)
+- Randomized ban durations (1 to 30 days)
+- Persistent tracking of bans in SQLite
+- Automatic unban of expired entries
+- Duplicate ban prevention
+- Telegram alerts with hostname
+- Compatible with systemd and `iptables-persistent`
+
+---
 
 ## 📝 Prerequisites
-Before running this script, ensure that you have the following:
 
-- Python 3.x installed on your system
-- `requests` library (`pip install requests`)
-- Access to the SSH log file (`/var/log/auth.log` or equivalent)
-- A Telegram bot token and chat ID for sending alerts
-- Appropriate permissions to read the SSH log file and write log files
+- Python 3.8+
+- `iptables` and/or `ip6tables`
+- `iptables-persistent` for ban persistence across reboot
+- Access to `/var/log/auth.log` or equivalent SSH log
+- A Telegram Bot Token and Chat ID
+- Required Python packages:
 
-### 🔄 Installation
-
-1. Clone this repository:
+```bash
+pip install -r requirements.txt
 ```
+
+---
+
+## 📦 Installation
+
+1. Clone the repository:
+
+```bash
 git clone https://github.com/r0xd4n3t/SecureSSHMonitor.git
-cd ssh-login-monitor
+cd SecureSSHMonitor
 ```
+2. Install dependencies:
 
-2. Install the required Python package:
+```bash
+pip install -r requirements.txt
 ```
-pip3.10 install requests
-```
+3. Create .ssh_monitor directory:
 
-3. Update the script with your Telegram bot token, chat ID, and other necessary configurations:
+```bash
+mkdir -p /root/.ssh_monitor
+touch /root/.ssh_monitor/.ssh_login_monitor.log
+sqlite3 /root/.ssh_monitor/bans.db "VACUUM;"
 ```
+4. Update the script config:
+
+Edit your Python script:
+
+```python
 bot_token = 'YOUR_BOT_TOKEN'
 chat_id = 'YOUR_CHAT_ID'
 message_thread_id = 'YOUR_MESSAGE_THREAD_ID'
-log_path = '/root/ssh-login-monitor/.ssh_login_monitor.log'
-ssh_log_path = '/var/log/auth.log'  # Adjust if different on your system
-lockfile = '/root/ssh-login-monitor/.ssh_login_monitor.lock'
+log_path = '/root/.ssh_monitor/.ssh_login_monitor.log'
+ssh_log_path = '/var/log/auth.log'
+lockfile = '/root/.ssh_monitor/.ssh_login_monitor.lock'
+```
+---
+
+## 📜 requirements.txt
+
+```txt
+requests
+watchdog
+```
+Install with:
+
+```bash
+pip install -r requirements.txt
 ```
 
-### ▶ Running the Script
+### ▶ Running the Script (Manual)
 
-To run the SSH login monitor script, use the following command:
+```bash
+python3 ssh_login_monitor.py
 ```
-python3.10 ssh_login_monitor.py
-```
-Ensure that the script has the necessary permissions to read the SSH log file and write the log and lock files.
+### 🔄 Setting Up as a Systemd Service
 
-### 🔄 Setting Up as a Service
+1. Create the systemd service file:
 
-1. Create a systemd service file:
-```
+```bash
 nano /etc/systemd/system/ssh_login_monitor.service
 ```
+2.Add:
 
-2. Add the following content to the service file:
-```
+```bash
 [Unit]
 Description=SSH Login Monitor Service
 After=network.target
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/python3.10 /root/ssh-login-monitor/ssh_login_monitor.py
+ExecStart=/usr/bin/python3 /root/SecureSSHMonitor/ssh_login_monitor.py
 Restart=on-failure
 RestartSec=5
 User=root
@@ -105,38 +154,38 @@ LimitNOFILE=65536
 [Install]
 WantedBy=multi-user.target
 ```
+3. Enable and start:
 
-3. Make the script executable:
-```
-chmod +x /root/ssh-login-monitor/ssh_login_monitor.py
-```
-
-4. Create the log file and set permissions:
-```
-touch /root/ssh-login-monitor/.ssh_login_monitor.log
-chmod 644 /root/ssh-login-monitor/.ssh_login_monitor.log
-chown root:root /root/ssh-login-monitor/.ssh_login_monitor.log
-```
-
-5. Reload systemd, enable and start the service:
-```
+```bash
 systemctl daemon-reload
 systemctl enable ssh_login_monitor
 systemctl start ssh_login_monitor
 ```
 
-## 🕹️ Log Rotation
+---
 
-To manage log rotation for the SSH login monitor logs, use the logrotate tool. Create a configuration file for logrotate:
+### 🛡 Persistent Ban Across Reboot
 
-1. Create a new logrotate configuration file:
+Install `iptables-persistent` to preserve rules:
+
+```bash
+sudo apt install iptables-persistent
+sudo iptables-save > /etc/iptables/rules.v4
+sudo ip6tables-save > /etc/iptables/rules.v6
 ```
+Now, banned IPs remain blocked even after reboot.
+
+---
+
+## 📂 Log Rotation
+
+```bash
 nano /etc/logrotate.d/ssh_login_monitor
 ```
+Add:
 
-Add the following content:
-```
-/root/ssh-login-monitor/.ssh_login_monitor.log {
+```bash
+/root/.ssh_monitor/.ssh_login_monitor.log {
     daily
     missingok
     rotate 7
@@ -146,18 +195,17 @@ Add the following content:
     create 640 root root
     sharedscripts
     postrotate
-        systemctl restart ssh-login-monitor
+        systemctl restart ssh_login_monitor
     endscript
 }
 ```
-This configuration rotates the logs daily, keeps 7 days of logs, compresses old logs, and restarts the service after rotation.
 
-## **Contributions**
+## 🙌 Contributions
 
-Contributions to SSH Login Monitor are welcome! If you find any issues or have ideas for improvements, feel free to open an issue 
-or submit a pull request.
+Feel free to fork and submit pull requests or open issues.
 
-🔆 Happy Monitoring! 🔆
+Stay secure. Stay notified. 🚀
+Happy monitoring!
 
+<p align="center"><a href="#top">Back to Top</a></p> 
 
-<p align="center"><a href=#top>Back to Top</a></p>
