@@ -175,15 +175,37 @@ class SSHLoginMonitor:
     def unban_ip(self, ip):
         is_ipv6 = ':' in ip
         unban_cmd = f"ip6tables -D INPUT -s {ip} -j DROP" if is_ipv6 else f"iptables -D INPUT -s {ip} -j DROP"
+    
         try:
             subprocess.run(unban_cmd, shell=True, check=True)
+    
+            # Retrieve ban duration from DB before deletion
             with sqlite3.connect(DB_FILE) as conn:
+                cursor = conn.cursor()
+                cursor.execute("SELECT banned_at, ban_until FROM bans WHERE ip = ?", (ip,))
+                row = cursor.fetchone()
+    
+                if row:
+                    banned_at_str, ban_until_str = row
+                    banned_at = datetime.fromisoformat(banned_at_str)
+                    ban_until = datetime.fromisoformat(ban_until_str)
+                    duration = ban_until - banned_at
+                    days = duration.days
+                    hours = duration.seconds // 3600
+                    minutes = (duration.seconds % 3600) // 60
+                    duration_str = f"{days}d {hours}h {minutes}m" if days > 0 else f"{hours}h {minutes}m"
+                else:
+                    duration_str = "unknown"
+    
+                # Remove from DB
                 conn.execute("DELETE FROM bans WHERE ip = ?", (ip,))
                 conn.commit()
-            logging.info(f"IP {ip} unbanned.")
+    
+            logging.info(f"IP {ip} unbanned after serving ban.")
             self.send_telegram_message(
-                f"Server: [{self.hostname}] ✅ IP [{ip}] unbanned (ban expired)."
+                f"Server: [{self.hostname}] ✅ IP [{ip}] unbanned (ban expired after {duration_str})."
             )
+    
         except subprocess.CalledProcessError as e:
             logging.error(f"Unban failed for {ip}: {e}")
 
