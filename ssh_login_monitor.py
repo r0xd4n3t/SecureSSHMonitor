@@ -174,30 +174,33 @@ class SSHLoginMonitor:
 
     def unban_ip(self, ip):
         is_ipv6 = ':' in ip
+        list_cmd = f"ip6tables -S INPUT" if is_ipv6 else f"iptables -S INPUT"
         unban_cmd = f"ip6tables -D INPUT -s {ip} -j DROP" if is_ipv6 else f"iptables -D INPUT -s {ip} -j DROP"
     
         try:
-            subprocess.run(unban_cmd, shell=True, check=True)
-    
+            # Check if the rule exists before attempting deletion
+            result = subprocess.run(list_cmd, shell=True, capture_output=True, text=True, check=True)
+            if f"-s {ip} -j DROP" not in result.stdout:
+                logging.warning(f"No DROP rule found for IP {ip}, skipping iptables removal.")
+            else:
+                subprocess.run(unban_cmd, shell=True, check=True)
+            
+            # Retrieve ban timestamps to calculate duration
             with sqlite3.connect(DB_FILE) as conn:
-                cursor = conn.cursor()
-                cursor.execute("SELECT banned_at, ban_until FROM bans WHERE ip = ?", (ip,))
-                row = cursor.fetchone()
-    
+                cur = conn.cursor()
+                cur.execute("SELECT banned_at, ban_until FROM bans WHERE ip = ?", (ip,))
+                row = cur.fetchone()
                 if row:
                     banned_at = datetime.fromisoformat(row[0])
                     ban_until = datetime.fromisoformat(row[1])
-                    duration_days = (ban_until - banned_at).days
+                    duration = (ban_until - banned_at).days
                     conn.execute("DELETE FROM bans WHERE ip = ?", (ip,))
                     conn.commit()
     
-                    logging.info(f"IP {ip} unbanned (Duration: {duration_days} days)")
+                    logging.info(f"IP {ip} unbanned after {duration} day(s)")
                     self.send_telegram_message(
-                        f"Server: [{self.hostname}] ✅ IP [{ip}] unbanned (Ban Duration : [{duration_days}] day(s))."
+                        f"Server: [{self.hostname}] ✅ IP [{ip}] unbanned (Ban Duration : [{duration}] day(s))."
                     )
-                else:
-                    logging.warning(f"IP {ip} unbanned but not found in DB.")
-    
         except subprocess.CalledProcessError as e:
             logging.error(f"Unban failed for {ip}: {e}")
 
